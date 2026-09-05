@@ -1,0 +1,123 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: Fathom
+  BUNDLE_ID: art.luxarcanum.fathom
+  DEPLOY_DIR: /var/www/luxarcanum.art/public/apps
+  DOWNLOAD_BASE: https://luxarcanum.art/apps
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build (unsigned archive)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$APP_NAME.xcodeproj" \
+            -scheme "$APP_NAME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "build/$APP_NAME.xcarchive" \
+            archive \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO CODE_SIGN_ENTITLEMENTS="" \
+          | xcpretty || xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath "build/$APP_NAME.xcarchive" archive CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+
+      - name: Package IPA
+        id: pkg
+        run: |
+          APP_PATH="build/$APP_NAME.xcarchive/Products/Applications/$APP_NAME.app"
+          test -d "$APP_PATH"
+          rm -rf Payload && mkdir Payload
+          cp -r "$APP_PATH" Payload/
+          VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PATH/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PATH/Info.plist")
+          IPA="${APP_NAME}-${VER}.ipa"
+          zip -qr "$IPA" Payload
+          SIZE=$(stat -f%z "$IPA")
+          echo "ipa=$IPA"     >> "$GITHUB_OUTPUT"
+          echo "ver=$VER"     >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE"   >> "$GITHUB_OUTPUT"
+          ls -la "$IPA"
+
+      - name: Write SideStore source (repo.json)
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          cat > repo.json <<JSON
+          {
+            "name": "Fathom",
+            "identifier": "art.luxarcanum.source",
+            "subtitle": "Proxy browser",
+            "description": "A browser with the Fathom proxy built in.",
+            "iconURL": "https://luxarcanum.art/favicon.ico",
+            "website": "https://luxarcanum.art",
+            "tintColor": "#3b82f6",
+            "apps": [
+              {
+                "name": "Fathom",
+                "bundleIdentifier": "${BUNDLE_ID}",
+                "developerName": "fede",
+                "subtitle": "Proxy browser",
+                "localizedDescription": "Native iOS browser with the Fathom proxy built in. Failover proxy origins, native ad blocking, tab management.",
+                "iconURL": "https://luxarcanum.art/favicon.ico",
+                "tintColor": "#3b82f6",
+                "category": "utilities",
+                "version": "${{ steps.pkg.outputs.ver }}",
+                "versionDate": "${DATE}",
+                "versionDescription": "Automated build ${{ github.sha }}",
+                "downloadURL": "${DOWNLOAD_BASE}/${{ steps.pkg.outputs.ipa }}",
+                "size": ${{ steps.pkg.outputs.size }},
+                "minOSVersion": "16.0",
+                "screenshotURLs": []
+              }
+            ],
+            "news": []
+          }
+          JSON
+          cat repo.json
+
+      - name: Deploy to VPS
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          curl -fsS --retry 3 -X PUT \
+            -H "Authorization: Bearer $DEPLOY_TOKEN" \
+            --data-binary "@${{ steps.pkg.outputs.ipa }}" \
+            "https://luxarcanum.art/_deploy/${{ steps.pkg.outputs.ipa }}"
+          echo
+          curl -fsS --retry 3 -X PUT \
+            -H "Authorization: Bearer $DEPLOY_TOKEN" \
+            --data-binary "@repo.json" \
+            "https://luxarcanum.art/_deploy/repo.json"
+          echo
+          curl -fsS -o /dev/null -w "verify repo.json -> %{http_code}\n" https://luxarcanum.art/repo.json
+          curl -fsS -o /dev/null -w "verify ipa -> %{http_code}\n" "${DOWNLOAD_BASE}/${{ steps.pkg.outputs.ipa }}"
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.pkg.outputs.ver }}-${{ github.run_number }}
+          files: |
+            ${{ steps.pkg.outputs.ipa }}
+            repo.json

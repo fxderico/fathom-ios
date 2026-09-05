@@ -11,8 +11,7 @@ permissions:
 env:
   APP_NAME: Fathom
   BUNDLE_ID: art.luxarcanum.fathom
-  DEPLOY_DIR: /var/www/luxarcanum.art/public/apps
-  DOWNLOAD_BASE: https://luxarcanum.art/apps
+  RELEASE_BASE: https://github.com/fxderico/fathom-ios/releases/latest/download
 
 jobs:
   build:
@@ -52,14 +51,12 @@ jobs:
           cp -r "$APP_PATH" Payload/
           VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PATH/Info.plist")
           BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PATH/Info.plist")
-          IPA="${APP_NAME}-${VER}.ipa"
-          zip -qr "$IPA" Payload
-          SIZE=$(stat -f%z "$IPA")
-          echo "ipa=$IPA"     >> "$GITHUB_OUTPUT"
+          zip -qr "$APP_NAME.ipa" Payload            # stable name -> /releases/latest/download/Fathom.ipa
+          SIZE=$(stat -f%z "$APP_NAME.ipa")
           echo "ver=$VER"     >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
           echo "size=$SIZE"   >> "$GITHUB_OUTPUT"
-          ls -la "$IPA"
+          ls -la "$APP_NAME.ipa"
 
       - name: Write SideStore source (repo.json)
         run: |
@@ -72,6 +69,7 @@ jobs:
             "description": "A browser with the Fathom proxy built in.",
             "iconURL": "https://luxarcanum.art/favicon.ico",
             "website": "https://luxarcanum.art",
+            "sourceURL": "https://luxarcanum.art/repo.json",
             "tintColor": "#3b82f6",
             "apps": [
               {
@@ -79,14 +77,14 @@ jobs:
                 "bundleIdentifier": "${BUNDLE_ID}",
                 "developerName": "fede",
                 "subtitle": "Proxy browser",
-                "localizedDescription": "Native iOS browser with the Fathom proxy built in. Failover proxy origins, native ad blocking, tab management.",
+                "localizedDescription": "Native iOS browser with the Fathom proxy built in. Failover proxy origins, native ad blocking, tabs.",
                 "iconURL": "https://luxarcanum.art/favicon.ico",
                 "tintColor": "#3b82f6",
                 "category": "utilities",
                 "version": "${{ steps.pkg.outputs.ver }}",
                 "versionDate": "${DATE}",
                 "versionDescription": "Automated build ${{ github.sha }}",
-                "downloadURL": "${DOWNLOAD_BASE}/${{ steps.pkg.outputs.ipa }}",
+                "downloadURL": "${RELEASE_BASE}/Fathom.ipa",
                 "size": ${{ steps.pkg.outputs.size }},
                 "minOSVersion": "16.0",
                 "screenshotURLs": []
@@ -97,27 +95,12 @@ jobs:
           JSON
           cat repo.json
 
-      - name: Deploy to VPS
-        env:
-          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
-        run: |
-          curl -fsS --retry 3 -X PUT \
-            -H "Authorization: Bearer $DEPLOY_TOKEN" \
-            --data-binary "@${{ steps.pkg.outputs.ipa }}" \
-            "https://luxarcanum.art/_deploy/${{ steps.pkg.outputs.ipa }}"
-          echo
-          curl -fsS --retry 3 -X PUT \
-            -H "Authorization: Bearer $DEPLOY_TOKEN" \
-            --data-binary "@repo.json" \
-            "https://luxarcanum.art/_deploy/repo.json"
-          echo
-          curl -fsS -o /dev/null -w "verify repo.json -> %{http_code}\n" https://luxarcanum.art/repo.json
-          curl -fsS -o /dev/null -w "verify ipa -> %{http_code}\n" "${DOWNLOAD_BASE}/${{ steps.pkg.outputs.ipa }}"
-
-      - name: GitHub Release
+      - name: Publish release (IPA + repo.json, public)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.pkg.outputs.ver }}-${{ github.run_number }}
+          name: Fathom ${{ steps.pkg.outputs.ver }} (build ${{ github.run_number }})
+          make_latest: true
           files: |
-            ${{ steps.pkg.outputs.ipa }}
+            Fathom.ipa
             repo.json
